@@ -1,8 +1,11 @@
-exclude = ["**/.cargo/registry/**"]
+## DO NOT EDIT!
+# This file was provisioned by Terraform
+# File origin: https://github.com/Arrow-air/tf-github/tree/main/src/templates/rust-all/.taplo.toml
+exclude = ["**/.cargo/registry/**", "target/**"]
 
 [formatting]
-reorder_keys  = false
 align_entries = true
+reorder_keys  = false
 
 [[rule]]
 include = ["**/Cargo.toml"]
