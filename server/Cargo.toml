@@ -7,7 +7,7 @@ keywords    = ["vtol", "server"]                                           # max
 license     = "BUSL-1.1"
 name        = "svc-cargo"
 repository  = "https://github.com/Arrow-air/svc-cargo"
-version     = "0.8.0-develop.3"
+version     = "0.8.0-develop.4"
 
 categories = [
   "aerospace::drones",
