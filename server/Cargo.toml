@@ -30,30 +30,33 @@ stub_server = ["test_util"]
 stub_client = ["stub_backends"]
 
 [dependencies]
-anyhow       = "1.0"
-axum         = "0.6"
-cargo-husky  = "1"
-chrono       = { version = "0.4", features = ["serde"] }
-clap         = { version = "4.4", features = ["derive"] }
-config       = "0.13"
-dotenv       = "0.15"
-env_logger   = "0.10"
-futures      = "0.3"
-geo          = { version = "0.26", features = ["use-serde"] }
-hyper        = "0.14"
-log          = "0.4"
-openssl      = "0.10"
-prost        = "0.12"
-prost-types  = "0.12"
-serde        = "1.0"
-serde_json   = "1.0"
-tokio        = { version = "1.33", features = ["full"] }
-tokio-util   = "0.7"
-tonic        = "0.10"
-tonic-health = "0.10"
-tower        = { version = "0.4", features = ["limit"] }
-tower-http   = { version = "0.4", features = ["cors", "trace"] }
-uuid         = { version = "1.5", features = ["v4"] }
+anyhow         = "1.0"
+axum           = "0.6"
+cargo-husky    = "1"
+chrono         = { version = "0.4", features = ["serde"] }
+clap           = { version = "4.4", features = ["derive"] }
+config         = "0.13"
+deadpool-redis = { version = "0.13", features = ["serde"] }
+dotenv         = "0.15"
+env_logger     = "0.10"
+futures        = "0.3"
+geo            = { version = "0.26", features = ["use-serde"] }
+hyper          = "0.14"
+log            = "0.4"
+num-derive     = "0.4"
+num-traits     = "0.2"
+openssl        = "0.10"
+prost          = "0.12"
+prost-types    = "0.12"
+serde          = "1.0"
+serde_json     = "1.0"
+tokio          = { version = "1.33", features = ["full"] }
+tokio-util     = "0.7"
+tonic          = "0.10"
+tonic-health   = "0.10"
+tower          = { version = "0.4", features = ["limit"] }
+tower-http     = { version = "0.4", features = ["cors", "trace"] }
+uuid           = { version = "1.5", features = ["v4"] }
 
 [dependencies.svc-scheduler-client-grpc]
 git = "https://github.com/Arrow-air/svc-scheduler.git"
@@ -71,6 +74,8 @@ features = [
   "parcel",
   "vehicle",
   "flight_plan",
+  "flight_plan_parcel",
+  "group",
 ]
 git = "https://github.com/Arrow-air/svc-storage"
 tag = "latest-develop"

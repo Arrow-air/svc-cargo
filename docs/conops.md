@@ -116,8 +116,8 @@ client <-- Request<br>Confirm<br>Modify<br>Cancel --> ops
 - Query available flights
 - Receive flight information
 - Confirm flights
-- Modify confirmed flights
-- Cancel confirmed flights
+- Modify created flights
+- Cancel created flights
 
 #### 3.1.2 Regional Data
 

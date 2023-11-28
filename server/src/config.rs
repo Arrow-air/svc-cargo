@@ -35,6 +35,8 @@ pub struct Config {
     /// Full url (including port number) to be allowed as request origin for
     /// REST requests
     pub rest_cors_allowed_origin: String,
+    /// config to be used for the Redis server
+    pub redis: deadpool_redis::Config,
 }
 
 impl Default for Config {
@@ -60,6 +62,11 @@ impl Config {
             rest_request_limit_per_second: 2,
             rest_concurrency_limit_per_service: 5,
             rest_cors_allowed_origin: String::from("http://localhost:3000"),
+            redis: deadpool_redis::Config {
+                url: None,
+                pool: None,
+                connection: None,
+            },
         }
     }
 
@@ -123,6 +130,9 @@ mod tests {
             config.rest_cors_allowed_origin,
             String::from("http://localhost:3000")
         );
+        assert!(config.redis.url.is_none());
+        assert!(config.redis.pool.is_none());
+        assert!(config.redis.connection.is_none());
 
         ut_info!("(test_config_from_default) Success.");
     }
@@ -147,6 +157,10 @@ mod tests {
             "REST_CORS_ALLOWED_ORIGIN",
             "https://allowed.origin.host:443",
         );
+        std::env::set_var("REDIS__URL", "redis://test_redis:6379");
+        std::env::set_var("REDIS__POOL__MAX_SIZE", "16");
+        std::env::set_var("REDIS__POOL__TIMEOUTS__WAIT__SECS", "2");
+        std::env::set_var("REDIS__POOL__TIMEOUTS__WAIT__NANOS", "0");
 
         let config = Config::try_from_env();
         assert!(config.is_ok());
@@ -170,6 +184,11 @@ mod tests {
             config.rest_cors_allowed_origin,
             String::from("https://allowed.origin.host:443")
         );
+        assert_eq!(
+            config.redis.url,
+            Some(String::from("redis://test_redis:6379"))
+        );
+        assert!(config.redis.pool.is_some());
 
         ut_info!("(test_config_from_env) Success.");
     }
