@@ -1,5 +1,5 @@
 pub use super::rest_types::{
-    CargoInfo, CurrencyUnit, Itinerary, ItineraryCreateRequest, PaymentInfo,
+    CargoInfo, CurrencyUnit, Itinerary, ItineraryCreateRequest, SchedulerFlightPlan,
 };
 use crate::cache::pool::ItineraryPool;
 use crate::grpc::client::GrpcClients;
@@ -84,8 +84,19 @@ async fn scheduler_request(
 ) -> Result<TaskResponse, StatusCode> {
     rest_debug!("(scheduler_request) creating itinerary with scheduler.");
 
+    let Ok(flight_plans) = itinerary
+        .flight_plans
+        .clone()
+        .into_iter()
+        .map(|fp| fp.try_into())
+        .collect::<Result<Vec<SchedulerFlightPlan>, _>>()
+    else {
+        rest_error!("(scheduler_request) invalid flight plan data.");
+        return Err(StatusCode::BAD_REQUEST);
+    };
+
     let data = CreateItineraryRequest {
-        flight_plans: itinerary.flight_plans.clone(),
+        flight_plans,
         priority: FlightPriority::Low as i32,
         expiry: Some(expiry.into()),
         user_id: itinerary.user_id.clone(),

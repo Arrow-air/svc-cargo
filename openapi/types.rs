@@ -2,14 +2,158 @@ use chrono::{DateTime, Utc};
 /// Types used for REST communication with the svc-cargo server
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
+use num_traits::FromPrimitive;
 
 /// TODO(R4): Import payment type enums from svc-payment
 /// pub use svc_payment_client_grpc::prelude::payment::{PaymentType, CreditCardInfo};
 
-pub use svc_scheduler_client_grpc::prelude::scheduler_storage::{GeoPoint, flight_plan::Data as FlightPlan};
+pub use svc_scheduler_client_grpc::prelude::scheduler_storage::{GeoPoint, GeoLineString, flight_plan::Data as SchedulerFlightPlan};
 
 /// Don't allow overly large numbers of occupations to be returned
 pub const MAX_LANDINGS_TO_RETURN: u32 = 50;
+
+/// Non-privileged flight plan information
+#[derive(Debug, Clone, IntoParams, ToSchema, Deserialize, Serialize)]
+pub struct FlightPlan {
+    /// The String ID of the vertiport to leave from
+    pub origin_vertiport_id: String,
+
+    /// The String ID of the vertipad to leave from
+    pub origin_vertipad_id: String,
+
+    /// The String ID of the destination vertiport
+    pub target_vertiport_id: String,
+
+    /// The String ID of the destination vertipad
+    pub target_vertipad_id: String,
+
+    /// The path of the flight plan
+    pub path: Vec<GeoPoint>,
+
+    /// The end of the window of departure
+    pub origin_timeslot_start: DateTime<Utc>,
+
+    /// The end of the window of departure
+    pub origin_timeslot_end: DateTime<Utc>,
+
+    /// The start of the window of arrival
+    pub target_timeslot_start: DateTime<Utc>,
+
+    /// The end of the window of arrival
+    pub target_timeslot_end: DateTime<Utc>,
+
+    /// The unique ID of the aircraft
+    pub vehicle_id: String,
+
+    /// The priority of the flight plan
+    pub flight_priority: i32
+}
+
+#[derive(Debug, Copy, Clone)]
+/// Flight Plan Error
+pub enum FlightPlanError {
+    /// Invalid Origin Vertiport ID
+    OriginVertiportId,
+
+    /// Invalid Target Vertiport ID
+    TargetVertiportId,
+
+    /// Invalid Path
+    Path,
+
+    /// Invalid Target Timeslot Start
+    TargetTimeslotStart,
+
+    /// Invalid Target Timeslot End
+    TargetTimeslotEnd,
+
+    /// Invalid Origin Timeslot Start
+    OriginTimeslotStart,
+
+    /// Invalid Origin Timeslot End
+    OriginTimeslotEnd,
+
+    /// Invalid Flight Priority
+    FlightPriority,
+}
+
+impl TryFrom<FlightPlan> for SchedulerFlightPlan {
+    type Error = FlightPlanError;
+
+    fn try_from(flight_plan: FlightPlan) -> Result<Self, Self::Error> {
+        let Some(flight_priority) = FromPrimitive::from_i32(flight_plan.flight_priority) else {
+            return Err(FlightPlanError::FlightPriority);
+        };
+
+        Ok(SchedulerFlightPlan {
+            origin_vertiport_id: Some(flight_plan.origin_vertiport_id),
+            origin_vertipad_id: flight_plan.origin_vertipad_id,
+            target_vertiport_id: Some(flight_plan.target_vertiport_id),
+            target_vertipad_id: flight_plan.target_vertipad_id,
+            path: Some(GeoLineString {
+                points: flight_plan.path,
+            }),
+            target_timeslot_start: Some(flight_plan.target_timeslot_start.into()),
+            target_timeslot_end: Some(flight_plan.target_timeslot_end.into()),
+            origin_timeslot_start: Some(flight_plan.origin_timeslot_start.into()),
+            origin_timeslot_end: Some(flight_plan.origin_timeslot_end.into()),
+            vehicle_id: flight_plan.vehicle_id,
+            flight_priority,
+            ..Default::default()
+        })
+    }
+}
+
+impl TryFrom<SchedulerFlightPlan> for FlightPlan {
+    type Error = FlightPlanError;
+
+    fn try_from(flight_plan: SchedulerFlightPlan) -> Result<Self, Self::Error> {
+        let Some(origin_vertiport_id) = flight_plan.origin_vertiport_id else {
+            return Err(FlightPlanError::OriginVertiportId);
+        };
+
+        let Some(target_vertiport_id) = flight_plan.target_vertiport_id else {
+            return Err(FlightPlanError::TargetVertiportId);
+        };
+
+        let path = match flight_plan.path {
+            Some(path) => path.points,
+            None => {
+                return Err(FlightPlanError::Path);
+            }
+        };
+
+        let Some(target_timeslot_start) = flight_plan.target_timeslot_start else {
+            return Err(FlightPlanError::TargetTimeslotStart);
+        };
+
+        let Some(target_timeslot_end) = flight_plan.target_timeslot_end else {
+            return Err(FlightPlanError::TargetTimeslotEnd);
+        };
+
+        let Some(origin_timeslot_start) = flight_plan.origin_timeslot_start else {
+            return Err(FlightPlanError::OriginTimeslotStart);
+        };
+
+        let Some(origin_timeslot_end) = flight_plan.origin_timeslot_end else {
+            return Err(FlightPlanError::OriginTimeslotEnd);
+        };
+
+        Ok(FlightPlan {
+            origin_vertiport_id,
+            origin_vertipad_id: flight_plan.origin_vertipad_id,
+            target_vertipad_id: flight_plan.target_vertipad_id,
+            target_vertiport_id,
+            vehicle_id: flight_plan.vehicle_id,
+            path,
+            target_timeslot_start: target_timeslot_start.into(),
+            target_timeslot_end: target_timeslot_end.into(),
+            origin_timeslot_start: origin_timeslot_start.into(),
+            origin_timeslot_end: origin_timeslot_end.into(),
+            flight_priority: flight_plan.flight_priority,
+        })
+    }
+}
 
 /// Request Body Information for Flight Query
 #[derive(Debug, Clone, IntoParams, ToSchema, Deserialize, Serialize)]

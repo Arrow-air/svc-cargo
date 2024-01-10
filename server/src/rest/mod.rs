@@ -40,6 +40,7 @@ use utoipa::OpenApi;
             rest_types::QueryParcelResponse,
             rest_types::GeoPoint,
             rest_types::PaymentInfo,
+            rest_types::InvoiceItem
         )
     ),
     tags(

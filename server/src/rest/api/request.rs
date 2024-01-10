@@ -154,16 +154,33 @@ async fn scheduler_query(
 
 /// Unpacks flight plans from the scheduler into a format that
 ///  can be returned to the customer
-fn unpack_itineraries(itineraries: Vec<SchedulerItinerary>) -> Vec<Itinerary> {
-    itineraries
-        .into_iter()
-        .map(|itinerary| Itinerary {
-            flight_plans: itinerary.flight_plans,
+fn unpack_itineraries(mut itineraries: Vec<SchedulerItinerary>) -> Vec<Itinerary> {
+    let mut unpacked = vec![];
+
+    for itinerary in itineraries.iter_mut() {
+        let Ok(flight_plans) = itinerary
+            .flight_plans
+            .clone()
+            .into_iter()
+            .map(|fp| fp.try_into())
+            .collect::<Result<Vec<FlightPlan>, _>>()
+        else {
+            rest_error!(
+                "(request_flight) invalid flight plans in itinerary: {:?}",
+                itinerary
+            );
+            continue;
+        };
+
+        unpacked.push(Itinerary {
+            flight_plans,
             invoice: vec![],
             currency_unit: CurrencyUnit::Euro,
             ..Default::default()
-        })
-        .collect::<Vec<Itinerary>>()
+        });
+    }
+
+    unpacked
 }
 
 /// Get the price for each itinerary
@@ -178,38 +195,14 @@ async fn update_pricing(
         .filter_map(|flight_plan| {
             let mut weight_g: u32 = 0;
 
-            let Some(origin_vertiport_id) = flight_plan.origin_vertiport_id.clone() else {
-                rest_error!(
-                    "(request_flight) flight plan missing origin vertiport ID: {:?}",
-                    flight_plan
-                );
-                return None;
-            };
-
-            let Some(target_vertiport_id) = flight_plan.target_vertiport_id.clone() else {
-                rest_error!(
-                    "(request_flight) flight plan missing target vertiport ID: {:?}",
-                    flight_plan
-                );
-                return None;
-            };
-
-            let Some(ref path) = flight_plan.path else {
-                rest_error!(
-                    "(request_flight) flight plan missing path: {:?}",
-                    flight_plan
-                );
-                return None;
-            };
-
             // add parcel weight
-            if origin_vertiport_id == payload.origin_vertiport_id
-                || target_vertiport_id == payload.target_vertiport_id
+            if flight_plan.origin_vertiport_id == payload.origin_vertiport_id
+                || flight_plan.target_vertiport_id == payload.target_vertiport_id
             {
                 weight_g = payload.cargo_weight_g;
             }
 
-            let distance_meters = match get_distance_meters(&path.points) {
+            let distance_meters = match get_distance_meters(&flight_plan.path) {
                 Ok(d) => d,
                 Err(e) => {
                     rest_error!("(request_flight) invalid flight plan path: {:?}", e);
@@ -261,24 +254,11 @@ async fn update_pricing(
         .iter()
         .zip(itinerary.flight_plans.iter_mut())
     {
-        let Some(origin_vertiport_id) = flight_plan.origin_vertiport_id.clone() else {
-            rest_error!(
-                "(request_flight) flight plan missing origin vertiport ID: {:?}",
-                flight_plan
-            );
-            return Err(StatusCode::INTERNAL_SERVER_ERROR);
-        };
-
-        let Some(target_vertiport_id) = flight_plan.target_vertiport_id.clone() else {
-            rest_error!(
-                "(request_flight) flight plan missing target vertiport ID: {:?}",
-                flight_plan
-            );
-            return Err(StatusCode::INTERNAL_SERVER_ERROR);
-        };
-
         itinerary.invoice.push(InvoiceItem {
-            item: format!("({})=>({})", origin_vertiport_id, target_vertiport_id),
+            item: format!(
+                "({})=>({})",
+                flight_plan.origin_vertiport_id, flight_plan.target_vertiport_id
+            ),
             cost: *price,
         });
     }
