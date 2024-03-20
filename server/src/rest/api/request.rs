@@ -1,8 +1,11 @@
-use super::rest_types::{FlightLeg, FlightRequest, Itinerary};
+pub use super::rest_types::{
+    DraftItinerary, FlightPlan, InvoiceItem, Itinerary, QueryItineraryRequest,
+};
 use super::utils::is_uuid;
+use crate::cache::pool::ItineraryPool;
 use crate::grpc::client::GrpcClients;
 use axum::{extract::Extension, Json};
-use chrono::{Duration, Utc};
+use chrono::Utc;
 use geo::HaversineDistance;
 use hyper::StatusCode;
 use lib_common::grpc::Client;
@@ -10,20 +13,21 @@ use lib_common::grpc::Client;
 //
 // Other Service Dependencies
 //
+use crate::rest::rest_types::CurrencyUnit;
 use svc_pricing_client_grpc::prelude::*;
-use svc_scheduler_client_grpc::prelude::scheduler_storage::{
-    flight_plan::Object as FlightPlanObject, GeoPoint,
-};
-use svc_scheduler_client_grpc::prelude::*;
+use svc_scheduler_client_grpc::client::Itinerary as SchedulerItinerary;
+use svc_scheduler_client_grpc::client::QueryFlightRequest;
+use svc_scheduler_client_grpc::prelude::scheduler_storage::GeoPoint;
+use svc_scheduler_client_grpc::prelude::FlightPriority;
+use svc_scheduler_client_grpc::prelude::SchedulerServiceClient;
 
 /// Don't allow excessively heavy loads
 const MAX_CARGO_WEIGHT_G: u32 = 1_000_000; // 1000 kg
 
+/// Errors that can occur when processing a flight plan from the scheduler
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum FlightPlanError {
-    DepartureTime,
-    ArrivalTime,
-    Data,
+    /// Invalid path data
     Path,
 }
 
@@ -33,7 +37,7 @@ fn get_distance_meters(path: &[GeoPoint]) -> Result<f32, FlightPlanError> {
     let mut distance: f64 = 0.0;
     if path.len() < 2 {
         rest_error!(
-            "(get_distance_meters) path too short: {} leg(s).",
+            "(get_distance_meters) path too short: {} segment(s).",
             path.len()
         );
         return Err(FlightPlanError::Path);
@@ -58,121 +62,45 @@ fn get_distance_meters(path: &[GeoPoint]) -> Result<f32, FlightPlanError> {
     Ok(distance as f32)
 }
 
-impl TryFrom<FlightPlanObject> for FlightLeg {
-    type Error = FlightPlanError;
-
-    fn try_from(plan: FlightPlanObject) -> Result<Self, Self::Error> {
-        let msg_prefix = "(FlightLeg::try_from(FlightPlanObject))";
-
-        let Some(data) = plan.data.clone() else {
-            let error_msg = "no data in flight plan; discarding.";
-            rest_error!("{msg_prefix} {}", &error_msg);
-            return Err(FlightPlanError::Data);
-        };
-
-        let Some(timestamp_depart) = data.origin_timeslot_start.clone() else {
-            let error_msg = "no departure time in flight plan; discarding.";
-            rest_error!("{msg_prefix} {}", &error_msg);
-            return Err(FlightPlanError::DepartureTime);
-        };
-
-        let Some(timestamp_arrive) = data.target_timeslot_start.clone() else {
-            let error_msg = "{msg_prefix} no arrival time in flight plan; discarding.";
-            rest_error!("{msg_prefix} {}", &error_msg);
-            return Err(FlightPlanError::ArrivalTime);
-        };
-
-        let Some(vertiport_depart_id) = data.origin_vertiport_id.clone() else {
-            let error_msg = "{msg_prefix} no departure vertiport in flight plan; discarding.";
-            rest_error!("{msg_prefix} {}", &error_msg);
-            return Err(FlightPlanError::DepartureTime);
-        };
-
-        let Some(vertiport_arrive_id) = data.target_vertiport_id.clone() else {
-            let error_msg = "{msg_prefix} no arrival vertiport in flight plan; discarding.";
-            rest_error!("{msg_prefix} {}", &error_msg);
-            return Err(FlightPlanError::ArrivalTime);
-        };
-
-        let path = match data.path {
-            Some(path) => path.points,
-            _ => {
-                let error_msg = "{msg_prefix} no path in flight plan; discarding.";
-                rest_error!("{msg_prefix} {}", &error_msg);
-                return Err(FlightPlanError::Data);
-            }
-        };
-
-        let distance_meters = get_distance_meters(&path)?;
-
-        Ok(FlightLeg {
-            flight_plan_id: plan.id,
-            vertiport_depart_id,
-            vertiport_arrive_id,
-            timestamp_depart: timestamp_depart.into(),
-            timestamp_arrive: timestamp_arrive.into(),
-            path,
-            distance_meters,
-            base_pricing: None,
-            currency_type: None,
-        })
-    }
-}
-
-// Get Available Flights
-///
-/// Search for available trips and return a list of [`Itinerary`].
-#[utoipa::path(
-    post,
-    path = "/cargo/request",
-    tag = "svc-cargo",
-    request_body = FlightRequest,
-    responses(
-        (status = 200, description = "List available flight plans", body = [Itinerary]),
-        (status = 400, description = "Request body is invalid format"),
-        (status = 500, description = "svc-scheduler or svc-pricing returned error"),
-        (status = 503, description = "Could not connect to other microservice dependencies")
-    )
-)]
-pub async fn request_flight(
-    Extension(mut grpc_clients): Extension<GrpcClients>,
-    Json(payload): Json<FlightRequest>,
-) -> Result<Json<Vec<Itinerary>>, StatusCode> {
-    rest_debug!("(request_flight) entry.");
-
-    //
-    // Validate Request
-    //
-
+/// Confirms that a payload has valid fields
+fn validate_payload(payload: &QueryItineraryRequest) -> Result<(), StatusCode> {
     // Reject extreme weights
-    let weight_g: u32 = (payload.cargo_weight_kg * 1000.0) as u32;
-    if weight_g >= MAX_CARGO_WEIGHT_G {
+    if payload.cargo_weight_g >= MAX_CARGO_WEIGHT_G {
         let error_msg = format!("request cargo weight exceeds {MAX_CARGO_WEIGHT_G}.");
         rest_error!("(request_flight) {}", &error_msg);
         return Err(StatusCode::BAD_REQUEST);
     }
 
     // Check UUID validity
-    if !is_uuid(&payload.vertiport_arrive_id) {
+    if !is_uuid(&payload.target_vertiport_id) {
         let error_msg = "arrival port ID not UUID format.".to_string();
         rest_error!("(request_flight) {}", &error_msg);
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    if !is_uuid(&payload.vertiport_depart_id) {
+    if !is_uuid(&payload.origin_vertiport_id) {
         let error_msg = "departure port ID not UUID format.".to_string();
         rest_error!("(request_flight) {}", &error_msg);
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    let mut flight_query = scheduler::QueryFlightRequest {
+    Ok(())
+}
+
+/// Query the scheduler for flight plans
+async fn scheduler_query(
+    payload: &QueryItineraryRequest,
+    grpc_clients: &mut GrpcClients,
+) -> Result<Vec<SchedulerItinerary>, StatusCode> {
+    let mut flight_query = QueryFlightRequest {
         is_cargo: true,
         persons: None,
-        weight_grams: Some(weight_g),
-        vertiport_depart_id: payload.vertiport_depart_id,
-        vertiport_arrive_id: payload.vertiport_arrive_id,
+        weight_grams: Some(payload.cargo_weight_g),
+        origin_vertiport_id: payload.origin_vertiport_id.clone(),
+        target_vertiport_id: payload.target_vertiport_id.clone(),
         earliest_departure_time: None,
         latest_arrival_time: None,
+        priority: FlightPriority::Low as i32,
     };
 
     let current_time = Utc::now();
@@ -185,9 +113,6 @@ pub async fn request_flight(
             return Err(StatusCode::BAD_REQUEST);
         }
 
-        // TODO(R4) - Rework this interface to be more intuitive
-        flight_query.earliest_departure_time =
-            Some((window.timestamp_min - Duration::hours(2)).into());
         flight_query.latest_arrival_time = Some(window.timestamp_max.into());
     }
 
@@ -198,9 +123,7 @@ pub async fn request_flight(
             return Err(StatusCode::BAD_REQUEST);
         }
 
-        // TODO(R4) - Rework this interface to be more intuitive
         flight_query.earliest_departure_time = Some(window.timestamp_min.into());
-        flight_query.latest_arrival_time = Some((window.timestamp_max + Duration::hours(2)).into());
     }
 
     if flight_query.earliest_departure_time.is_none() || flight_query.latest_arrival_time.is_none()
@@ -226,86 +149,199 @@ pub async fn request_flight(
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
     };
 
-    let itineraries: Vec<scheduler::Itinerary> = response.into_inner().itineraries;
+    Ok(response.into_inner().itineraries)
+}
 
-    //
-    // Unpack flight itineraries
-    //
+/// Unpacks flight plans from the scheduler into a format that
+///  can be returned to the customer
+fn unpack_itineraries(mut itineraries: Vec<SchedulerItinerary>) -> Vec<Itinerary> {
+    let mut unpacked = vec![];
 
-    // List of lists of flights
-    let mut offerings: Vec<Itinerary> = vec![];
-    for itinerary in itineraries.into_iter() {
-        let id = itinerary.id.clone();
-        let legs = itinerary
+    for itinerary in itineraries.iter_mut() {
+        let Ok(flight_plans) = itinerary
             .flight_plans
+            .clone()
             .into_iter()
-            .map(FlightLeg::try_from)
-            .collect::<Result<Vec<FlightLeg>, FlightPlanError>>();
-
-        let Ok(legs) = legs else {
-            rest_error!("(request_flight) Itinerary contained invalid flight plan(s).");
+            .map(|fp| fp.try_into())
+            .collect::<Result<Vec<FlightPlan>, _>>()
+        else {
+            rest_error!(
+                "(request_flight) invalid flight plans in itinerary: {:?}",
+                itinerary
+            );
             continue;
         };
 
-        offerings.push(Itinerary {
-            id,
-            legs,
-            base_pricing: None,
-            // TODO(R4): Vary currency by region
-            currency_type: Some("usd".to_string()),
-        })
+        unpacked.push(Itinerary {
+            flight_plans,
+            invoice: vec![],
+            currency_unit: CurrencyUnit::Euro,
+            ..Default::default()
+        });
     }
-    rest_info!("(request_flight) found {} flight options.", offerings.len());
+
+    unpacked
+}
+
+/// Get the price for each itinerary
+async fn update_pricing(
+    payload: &QueryItineraryRequest,
+    itinerary: &mut Itinerary,
+    grpc_clients: &mut GrpcClients,
+) -> Result<(), StatusCode> {
+    let requests = itinerary
+        .flight_plans
+        .iter()
+        .filter_map(|flight_plan| {
+            let mut weight_g: u32 = 0;
+
+            // add parcel weight
+            if flight_plan.origin_vertiport_id == payload.origin_vertiport_id
+                || flight_plan.target_vertiport_id == payload.target_vertiport_id
+            {
+                weight_g = payload.cargo_weight_g;
+            }
+
+            let distance_meters = match get_distance_meters(&flight_plan.path) {
+                Ok(d) => d,
+                Err(e) => {
+                    rest_error!("(request_flight) invalid flight plan path: {:?}", e);
+                    return None;
+                }
+            };
+
+            Some(pricing::PricingRequest {
+                service_type: pricing::pricing_request::ServiceType::Cargo as i32,
+                distance_km: distance_meters / 1000.0,
+                weight_kg: (weight_g as f32) / 1000.0,
+            })
+        })
+        .collect::<Vec<pricing::PricingRequest>>();
+
+    // At least one flight plan should have weight
+    if requests.iter().all(|r| r.weight_kg == 0.0) {
+        rest_error!("(request_flight) no flight plans with weight.");
+        rest_debug!("(request_flight) query payload: {:?}", &payload);
+        rest_debug!("(request_flight) itinerary: {:?}", &itinerary);
+
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    if requests.len() != itinerary.flight_plans.len() {
+        rest_error!("(request_flight) invalid pricing request count.");
+        rest_debug!("(request_flight) query payload: {:?}", &payload);
+        rest_debug!("(request_flight) itinerary: {:?}", &itinerary);
+
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    // Make request, process response
+    let response = grpc_clients
+        .pricing
+        .get_pricing(pricing::PricingRequests { requests })
+        .await;
+
+    let response = match response {
+        Err(e) => {
+            rest_error!("(request_flight) svc-pricing error: {e}");
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+        Ok(response) => response.into_inner(),
+    };
+
+    for (price, flight_plan) in response
+        .prices
+        .iter()
+        .zip(itinerary.flight_plans.iter_mut())
+    {
+        itinerary.invoice.push(InvoiceItem {
+            item: format!(
+                "({})=>({})",
+                flight_plan.origin_vertiport_id, flight_plan.target_vertiport_id
+            ),
+            cost: *price,
+        });
+    }
+
+    Ok(())
+}
+
+/// Get Available Flights
+///
+/// Search for available trips and return a list of [`Itinerary`].
+#[utoipa::path(
+    post,
+    path = "/cargo/request",
+    tag = "svc-cargo",
+    request_body = QueryItineraryRequest,
+    responses(
+        (status = 200, description = "List available flight plans", body = [Itinerary]),
+        (status = 400, description = "Request body is invalid format"),
+        (status = 500, description = "svc-scheduler or svc-pricing returned error"),
+        (status = 503, description = "Could not connect to other microservice dependencies")
+    )
+)]
+pub async fn request_flight(
+    Extension(mut grpc_clients): Extension<GrpcClients>,
+    Json(payload): Json<QueryItineraryRequest>,
+) -> Result<Json<Vec<DraftItinerary>>, StatusCode> {
+    rest_debug!("(request_flight) entry.");
+
+    //
+    // Validate Request
+    validate_payload(&payload)?;
+
+    //
+    // Query Flight with Scheduler
+    let itineraries = scheduler_query(&payload, &mut grpc_clients).await?;
+
+    //
+    // Unpack flight itineraries
+    let mut itineraries: Vec<Itinerary> = unpack_itineraries(itineraries);
 
     //
     // Get pricing for each itinerary
+    for itinerary in itineraries.iter_mut() {
+        itinerary.acquisition_vertiport_id = payload.origin_vertiport_id.clone();
+        itinerary.delivery_vertiport_id = payload.target_vertiport_id.clone();
+        itinerary.user_id = payload.user_id.clone();
+        itinerary.cargo_weight_g = payload.cargo_weight_g;
+        update_pricing(&payload, itinerary, &mut grpc_clients).await?;
+    }
+
     //
+    // Write all itineraries to redis
+    let Some(mut pool) = crate::cache::pool::get_pool().await else {
+        rest_error!("(store_itinerary) Couldn't get the redis pool.");
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    };
 
-    // StatusUpdate message to customer?
-    // e.g. Got your flights! Calculating prices...
-    for itinerary in &mut offerings {
-        let mut pricing_requests = pricing::PricingRequests { requests: vec![] };
-
-        for leg in &itinerary.legs {
-            let pricing_query = pricing::PricingRequest {
-                service_type: pricing::pricing_request::ServiceType::Cargo as i32,
-                distance_km: leg.distance_meters / 1000.0,
-                weight_kg: payload.cargo_weight_kg,
-            };
-
-            pricing_requests.requests.push(pricing_query);
-        }
-
-        // Make request, process response
-        let response = grpc_clients.pricing.get_pricing(pricing_requests).await;
-
-        let Ok(response) = response else {
-            let error_msg = "svc-pricing error.".to_string();
-            rest_error!(
-                "(request_flight) {} {:?}",
-                &error_msg,
-                response.unwrap_err()
-            );
-            rest_error!("(request_flight) invalidating svc-pricing client.");
-            grpc_clients.pricing.invalidate().await;
-            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    let mut draft_itineraries: Vec<DraftItinerary> = vec![];
+    for itinerary in itineraries.into_iter() {
+        let draft_id = match pool.store_itinerary(&itinerary).await {
+            Ok(draft_id) => draft_id,
+            Err(e) => {
+                rest_warn!(
+                    "(request_flight) error storing itinerary: {:?}; {}",
+                    itinerary,
+                    e
+                );
+                continue;
+            }
         };
 
-        let response = response.into_inner();
-
-        for (price, leg) in response.prices.iter().zip(itinerary.legs.iter_mut()) {
-            leg.base_pricing = Some(*price);
-            leg.currency_type = Some("usd".to_string());
-        }
-
-        itinerary.base_pricing = Some(response.prices.iter().sum());
+        draft_itineraries.push(DraftItinerary {
+            id: draft_id.to_string(),
+            itinerary,
+        });
     }
 
     rest_debug!(
         "(request_flight) exit with {} itineraries.",
-        offerings.len()
+        draft_itineraries.len()
     );
-    Ok(Json(offerings))
+
+    Ok(Json(draft_itineraries))
 }
 
 #[cfg(test)]
@@ -333,78 +369,31 @@ mod tests {
             ],
         });
         data.origin_timeslot_start = Some(Utc::now().into());
-        data.origin_timeslot_end = Some((Utc::now() + Duration::minutes(10)).into());
-        data.target_timeslot_start = Some((Utc::now() + Duration::hours(1)).into());
-        data.target_timeslot_start =
-            Some((Utc::now() + Duration::hours(1) + Duration::minutes(10)).into());
+        data.origin_timeslot_end = Some((Utc::now() + Duration::try_minutes(10).unwrap()).into());
+        data.target_timeslot_start = Some((Utc::now() + Duration::try_hours(1).unwrap()).into());
+        data.target_timeslot_start = Some(
+            (Utc::now() + Duration::try_hours(1).unwrap() + Duration::try_minutes(10).unwrap())
+                .into(),
+        );
 
         let flight_plan = flight_plan::Object {
             id: Uuid::new_v4().to_string(),
             data: Some(data.clone()),
         };
 
-        let leg: FlightLeg = FlightLeg::try_from(flight_plan.clone()).unwrap();
-        assert_eq!(flight_plan.id, leg.flight_plan_id);
-
         let result_data = data.clone();
+        let flight_plan_data = flight_plan.data.unwrap();
         assert_eq!(
             result_data.origin_vertiport_id.unwrap(),
-            leg.vertiport_depart_id
+            flight_plan_data.origin_vertiport_id.unwrap()
         );
         assert_eq!(
             result_data.target_vertiport_id.unwrap(),
-            leg.vertiport_arrive_id
+            flight_plan_data.target_vertiport_id.unwrap()
         );
-        assert_eq!(result_data.path.unwrap().points, leg.path);
-
-        // Bad time arguments
-        {
-            let mut data = data.clone();
-            data.origin_timeslot_start = None;
-            let fp = flight_plan::Object {
-                id: Uuid::new_v4().to_string(),
-                data: Some(data),
-            };
-            let e = FlightLeg::try_from(fp).unwrap_err();
-            assert_eq!(e, FlightPlanError::DepartureTime);
-        }
-
-        {
-            let mut data = data.clone();
-            data.target_timeslot_start = None;
-            let fp = flight_plan::Object {
-                id: Uuid::new_v4().to_string(),
-                data: Some(data),
-            };
-            let e = FlightLeg::try_from(fp).unwrap_err();
-            assert_eq!(e, FlightPlanError::ArrivalTime);
-        }
-
-        {
-            let mut data = data.clone();
-            // Needs 2 or more points to be valid
-            data.path = Some(GeoLineString {
-                points: vec![GeoPoint {
-                    latitude: 52.37488619450752,
-                    longitude: 4.916048576268328,
-                }],
-            });
-            let fp = flight_plan::Object {
-                id: Uuid::new_v4().to_string(),
-                data: Some(data),
-            };
-            let e = FlightLeg::try_from(fp).unwrap_err();
-            assert_eq!(e, FlightPlanError::Path);
-        }
-
-        {
-            let fp = flight_plan::Object {
-                id: Uuid::new_v4().to_string(),
-                data: None,
-            };
-
-            let e = FlightLeg::try_from(fp).unwrap_err();
-            assert_eq!(e, FlightPlanError::Data);
-        }
+        assert_eq!(
+            result_data.path.unwrap().points,
+            flight_plan_data.path.unwrap().points
+        );
     }
 }

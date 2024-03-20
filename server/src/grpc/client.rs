@@ -56,7 +56,6 @@ impl GrpcClients {
 #[cfg(test)]
 mod tests {
     use lib_common::grpc::Client as CommonClient;
-    use svc_storage_client_grpc::prelude::Client;
 
     use super::*;
 

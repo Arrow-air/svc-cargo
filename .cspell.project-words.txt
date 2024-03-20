@@ -46,3 +46,13 @@ vertipad
 logtest
 oneshot
 timeslot
+KEEPALIVE
+hset
+hsetnx
+hget
+deadpool
+loglevel
+FLUSHDB
+FLUSHALL
+seccomp
+Lcov

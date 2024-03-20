@@ -11,6 +11,7 @@ pub mod grpc;
 
 pub use crate::config::Config;
 pub use clap::Parser;
+pub mod cache;
 /// rest implementation module
 pub mod rest;
 

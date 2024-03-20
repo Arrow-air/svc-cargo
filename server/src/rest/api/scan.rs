@@ -1,11 +1,11 @@
-use super::rest_types::ParcelScan;
+use super::rest_types::CargoScan;
 use super::utils::is_uuid;
 use crate::grpc::client::GrpcClients;
 use axum::{extract::Extension, Json};
 use chrono::Utc;
 use hyper::StatusCode;
 use svc_storage_client_grpc::prelude::*;
-use svc_storage_client_grpc::resources::parcel_scan::Data as ParcelScanData;
+use svc_storage_client_grpc::resources::parcel_scan::Data as CargoScanData;
 
 /// Scan a parcel
 /// The provided parcel ID and scanner ID must already exist in the database
@@ -13,7 +13,7 @@ use svc_storage_client_grpc::resources::parcel_scan::Data as ParcelScanData;
     put,
     path = "/cargo/scan",
     tag = "svc-cargo",
-    request_body = ParcelScan,
+    request_body = CargoScan,
     responses(
         (status = 200, description = "Scan succeeded", body = String),
         (status = 400, description = "Request body is invalid format"),
@@ -23,11 +23,11 @@ use svc_storage_client_grpc::resources::parcel_scan::Data as ParcelScanData;
 )]
 pub async fn scan_parcel(
     Extension(grpc_clients): Extension<GrpcClients>,
-    Json(payload): Json<ParcelScan>,
+    Json(payload): Json<CargoScan>,
 ) -> Result<(), StatusCode> {
     rest_debug!("(scan_parcel) entry.");
 
-    if !is_uuid(&payload.parcel_id) {
+    if !is_uuid(&payload.cargo_id) {
         let error_msg = "parcel ID not in UUID format.".to_string();
         rest_error!("(scan_parcel) {}", &error_msg);
         return Err(StatusCode::BAD_REQUEST);
@@ -55,9 +55,9 @@ pub async fn scan_parcel(
     }
 
     // Make request, process response
-    let data = ParcelScanData {
+    let data = CargoScanData {
         scanner_id: payload.scanner_id,
-        parcel_id: payload.parcel_id,
+        parcel_id: payload.cargo_id,
         geo_location: Some(GeoPoint {
             latitude: payload.longitude,
             longitude: payload.latitude,

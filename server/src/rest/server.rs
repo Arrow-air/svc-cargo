@@ -94,17 +94,17 @@ pub async fn rest_server(
             "/cargo/request",
             routing::post(api::request::request_flight),
         )
-        .route(
-            "/cargo/confirm",
-            routing::put(api::confirm::confirm_itinerary),
-        )
+        .route("/cargo/create", routing::put(api::create::create_itinerary))
         .route(
             "/cargo/vertiports",
             routing::post(api::query::query_vertiports),
         )
         .route("/cargo/scan", routing::put(api::scan::scan_parcel))
         .route("/cargo/track", routing::get(api::query::query_scans))
-        .route("/cargo/landings", routing::get(api::query::query_landings))
+        .route(
+            "/cargo/occupations",
+            routing::get(api::query::query_occupations),
+        )
         .layer(
             CorsLayer::new()
                 .allow_origin(cors_allowed_origin)
