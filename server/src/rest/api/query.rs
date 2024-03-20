@@ -33,15 +33,21 @@ pub async fn query_vertiports(
     // 1 degree of longitude ~= 55 miles
     //
     let degree_range: f32 = 2.0;
-    let filter = AdvancedSearchFilter::search_between(
-        "latitude".to_owned(),
-        (payload.latitude + degree_range).to_string(),
-        (payload.latitude - degree_range).to_string(),
-    )
-    .and_between(
-        "longitude".to_owned(),
-        (payload.longitude + degree_range).to_string(),
-        (payload.longitude - degree_range).to_string(),
+    let filter = AdvancedSearchFilter::search_geo_intersect(
+        "geo_location".to_owned(),
+        format!(
+            "POLYGON((
+            {lon_max} {lat_max},
+            {lon_min} {lat_max},
+            {lon_min} {lat_min},
+            {lon_max} {lat_min},
+            {lon_max} {lat_max}
+        ))",
+            lat_max = (payload.latitude + degree_range).to_string(),
+            lon_max = (payload.longitude + degree_range).to_string(),
+            lat_min = (payload.latitude - degree_range).to_string(),
+            lon_min = (payload.longitude - degree_range).to_string(),
+        ),
     );
 
     // Make request, process response
@@ -74,7 +80,7 @@ pub async fn query_vertiports(
 
         vertiports.push(Vertiport {
             id: obj.id,
-            label: data.description,
+            label: data.name,
             latitude: latitude as f32,
             longitude: longitude as f32,
         })

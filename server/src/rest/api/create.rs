@@ -394,7 +394,12 @@ pub async fn create_itinerary(
     // Ask the scheduler to attempt to create the itinerary
     // This will "reserve" the weight/seats as well so we can
     //  create the parcel record in storage later without conflicts.
-    let expiry = Utc::now() + Duration::seconds(SCHEDULER_TASK_TIMEOUT_SECONDS);
+    let delta = Duration::try_seconds(SCHEDULER_TASK_TIMEOUT_SECONDS).ok_or_else(|| {
+        rest_error!("(create_itinerary) failed to create duration.");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let expiry = Utc::now() + delta;
     let task_id = scheduler_request(&itinerary, expiry, &grpc_clients)
         .await?
         .task_id;

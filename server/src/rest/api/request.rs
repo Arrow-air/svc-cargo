@@ -369,10 +369,12 @@ mod tests {
             ],
         });
         data.origin_timeslot_start = Some(Utc::now().into());
-        data.origin_timeslot_end = Some((Utc::now() + Duration::minutes(10)).into());
-        data.target_timeslot_start = Some((Utc::now() + Duration::hours(1)).into());
-        data.target_timeslot_start =
-            Some((Utc::now() + Duration::hours(1) + Duration::minutes(10)).into());
+        data.origin_timeslot_end = Some((Utc::now() + Duration::try_minutes(10).unwrap()).into());
+        data.target_timeslot_start = Some((Utc::now() + Duration::try_hours(1).unwrap()).into());
+        data.target_timeslot_start = Some(
+            (Utc::now() + Duration::try_hours(1).unwrap() + Duration::try_minutes(10).unwrap())
+                .into(),
+        );
 
         let flight_plan = flight_plan::Object {
             id: Uuid::new_v4().to_string(),
